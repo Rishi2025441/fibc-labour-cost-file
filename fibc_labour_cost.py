@@ -3,9 +3,18 @@ import pandas as pd
 import altair as alt
 import io
 import base64
+import pickle
+import os
 
 st.set_page_config(page_title="FIBC Labour Cost Sheet", layout="wide")
 
+# Load saved work orders from file if it exists
+if "work_orders" not in st.session_state:
+    if os.path.exists("work_orders.pkl"):
+        with open("work_orders.pkl", "rb") as f:
+            st.session_state.work_orders = pickle.load(f)
+    else:
+        st.session_state.work_orders = {}
 # Setup
 unit_passwords = {
     "Thandya Hall-1": "th1pass",
@@ -33,8 +42,6 @@ grade_options = list(grade_salary.keys())
 tailor_options = list(range(1, 19))
 
 # Session state
-if "work_orders" not in st.session_state:
-    st.session_state.work_orders = {}
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
     st.session_state.active_unit = None
@@ -70,7 +77,6 @@ if not st.session_state.logged_in and not st.session_state.admin_logged_in:
             else:
                 st.error("❌ Invalid admin credentials")
     st.stop()
-
 # Logout button
 if st.session_state.logged_in or st.session_state.admin_logged_in:
     if st.sidebar.button("🚪 Logout"):
@@ -81,6 +87,7 @@ if st.session_state.logged_in or st.session_state.admin_logged_in:
         st.session_state.edit_mode = False
         st.session_state.edit_order_id = None
         st.rerun()
+
 if st.session_state.logged_in:
     selected_unit = st.session_state.active_unit
     selected_line = st.session_state.active_line
@@ -106,7 +113,6 @@ if st.session_state.logged_in:
         bag_weight = st.number_input("Bag Weight (kg)", min_value=0.0)
         remarks = st.text_area("Remarks", "")
         bag_size = st.text_input("Bag Size", "")
-
     columns = ["Process", "No of Tailors", "Tailor Grade", "Production Target", "Remarks"]
     default_processes = [
         {"Process": "Cutting, Web cut,print & Kit", "No of Tailors": None, "Tailor Grade": "", "Production Target": None, "Remarks": ""},
@@ -271,6 +277,10 @@ if st.session_state.logged_in:
             "Financial Impact": summary_df
         }
 
+        # 🔒 Save to file
+        with open("work_orders.pkl", "wb") as f:
+            pickle.dump(st.session_state.work_orders, f)
+
         st.success(f"✅ Work Order '{work_order}' saved successfully!")
         st.session_state.edit_mode = False
         st.session_state.edit_order_id = None
@@ -278,7 +288,6 @@ if st.session_state.logged_in:
     if not st.session_state.edit_mode:
         if st.button("🆕 Start New Work Order", key="new_order_button"):
             st.rerun()
-
     # View Work Orders for This Unit and Line
     st.subheader("📄 View Saved Work Orders")
     filter_month = st.selectbox("Filter by Month", ["All"] + sorted({data["Month"] for data in st.session_state.work_orders.values()}))
@@ -315,6 +324,14 @@ if st.session_state.logged_in:
 
         st.subheader("📉 Production Efficiency & Financial Impact")
         st.table(order["Financial Impact"])
+
+        # 🔥 Delete button
+        if st.button(f"🗑️ Delete Work Order '{selected_order}'"):
+            del st.session_state.work_orders[selected_order]
+            with open("work_orders.pkl", "wb") as f:
+                pickle.dump(st.session_state.work_orders, f)
+            st.success(f"Work Order '{selected_order}' deleted.")
+            st.rerun()
     else:
         st.info("No saved work orders found for this line.")
 if st.session_state.admin_logged_in:
@@ -388,20 +405,27 @@ if st.session_state.admin_logged_in:
     st.subheader("📉 Production Efficiency & Financial Impact")
     st.table(order["Financial Impact"])
 
-    # Export summary sheet
-    def export_summary_excel_grouped(df):
-        output = io.BytesIO()
-        grouped = df.sort_values(by=["Unit", "Line"])
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            grouped.to_excel(writer, index=False, sheet_name="All Units & Lines")
-        output.seek(0)
-        return output
+    # 🔥 Admin delete button
+    if st.button(f"🗑️ Delete Work Order '{selected_order_id}'"):
+        del st.session_state.work_orders[selected_order_id]
+        with open("work_orders.pkl", "wb") as f:
+            pickle.dump(st.session_state.work_orders, f)
+        st.success(f"Work Order '{selected_order_id}' deleted.")
+        st.rerun()
+def export_summary_excel_grouped(df):
+    output = io.BytesIO()
+    grouped = df.sort_values(by=["Unit", "Line"])
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        grouped.to_excel(writer, index=False, sheet_name="All Units & Lines")
+    output.seek(0)
+    return output
 
-    if st.button("📥 Download Full Summary Excel"):
-        excel_data = export_summary_excel_grouped(summary_df)
-        b64 = base64.b64encode(excel_data.read()).decode()
-        href = f'<a href="data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}" download="FIBC_Full_Summary.xlsx">📁 Click to download</a>'
-        st.markdown(href, unsafe_allow_html=True)
+if st.session_state.admin_logged_in and st.button("📥 Download Full Summary Excel"):
+    excel_data = export_summary_excel_grouped(summary_df)
+    b64 = base64.b64encode(excel_data.read()).decode()
+    href = f'<a href="data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}" download="FIBC_Full_Summary.xlsx">📁 Click to download</a>'
+    st.markdown(href, unsafe_allow_html=True)
+
 def export_detailed_workbook(orders):
     import xlsxwriter
 
@@ -419,10 +443,8 @@ def export_detailed_workbook(orders):
             worksheet = workbook.add_worksheet(sheet_name)
             writer.sheets[sheet_name] = worksheet
 
-            # Header
             worksheet.write("A1", f"FIBC Order wise Labour Cost Details Month of - {order['Month']}", title_format)
 
-            # Order Details
             details = [
                 ("Hall No", order["Hall No"]),
                 ("Line No", order["Line No"]),
@@ -443,7 +465,6 @@ def export_detailed_workbook(orders):
                 safe_value = "" if pd.isna(value) or value in [float("inf"), float("-inf")] else value
                 worksheet.write(f"B{i}", safe_value)
 
-            # Labour Cost Table
             start_row = len(details) + 5
             worksheet.write(start_row, 0, "Labour Cost Table", title_format)
             labour_df = order["Labour Cost Table"]
@@ -455,7 +476,6 @@ def export_detailed_workbook(orders):
                     safe_value = "" if pd.isna(value) or value in [float("inf"), float("-inf")] else value
                     worksheet.write(start_row + 2 + row_num, col_num, safe_value, fmt)
 
-            # Efficiency Table
             eff_start = start_row + 4 + len(labour_df)
             worksheet.write(eff_start, 0, "Production Efficiency & Financial Impact", title_format)
             eff_df = order["Financial Impact"]
@@ -467,7 +487,6 @@ def export_detailed_workbook(orders):
     output.seek(0)
     return output
 
-# Button to trigger download
 if st.session_state.admin_logged_in and st.button("📥 Download Full Costing Workbook"):
     excel_data = export_detailed_workbook(st.session_state.work_orders)
     b64 = base64.b64encode(excel_data.read()).decode()
